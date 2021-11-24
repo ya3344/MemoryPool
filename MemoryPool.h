@@ -118,12 +118,8 @@ public:
 
 		// 사용중인 개수 체크
 		++mUseCount;
+		_ASSERT(mFreeNode != nullptr);
 
-		if (mFreeNode == nullptr)
-		{
-			_ASSERT(mFreeNode != nullptr);
-			return nullptr;
-		}
 		// placement boolean 값이 참인 경우에만 생성자 호출
 		if(mIsPlacementNew == true)
 			new (mFreeNode->data) Object();
