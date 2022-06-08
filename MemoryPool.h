@@ -1,88 +1,87 @@
 #pragma once
+// 포인터를 던져주기 때문에 독립적으로 동작 할 수 있다.
 
 template <class Object>
 class MemoryPool
 {
 public:
-	struct BlockNodeInfo
+	enum LOCK_FREE_INDE
 	{
-	public:
-		bool AllocBlockNode(const bool isPlacementNew)
-		{
-			if (isPlacementNew == true)
-			{
-				data = (Object *)malloc(sizeof(Object));
-				_ASSERT(data != nullptr);
-				return true;
-			}
-			else
-			{
-				data = new Object;
-				_ASSERT(data != nullptr);
-				return true;
-			}
-
-		}
-		void Release(const bool isPlacementNew)
-		{
-			if (isPlacementNew == true)
-			{
-				if (data)
-				{
-					free(data);
-					data = nullptr;
-				}
-			}
-			else
-			{
-				if (data)
-				{
-					delete data;
-					data = nullptr;
-				}
-			}
-		}
-
-	public:
-		Object* data = nullptr;
-		BlockNodeInfo* next = nullptr;
+		MEMORY_LOG_MAX_INDEX = 10000,
+		ALLOC_NULLPTR = 0,
+		ALLOC_BEFORE,
+		ALLOC_BEFORE_AFTER,
+		ALLOC_AFTER,
+		FREE,
 	};
 
 public:
+	struct NodeInfo
+	{
+		Object data;
+		NodeInfo* next = nullptr;
+	};
+	struct __declspec(align(16)) BlockNodeInfo
+	{
+	public:
+		NodeInfo* node = nullptr;
+		__int64 popCount = 0;
+	};
+
+public: // Debug 용
+	struct MemoryLogInfo
+	{
+		int* topAddress = nullptr;
+		int* topAddressNext = nullptr;
+		unsigned int threadID = 0;
+		char funcName = -1;
+		long threadCount = 0;
+	};
+
+public:
+	MemoryPool()
+	{
+		mIsPlacementNew = false;
+	}
 	explicit MemoryPool(int blockNum, bool isPlacementNew = false)
 	{
 		mIsPlacementNew = isPlacementNew;
+		NodeInfo* newNode = nullptr;
 
 		for (int i = 0; i < blockNum; ++i)
 		{
-			BlockNodeInfo* newNode = new BlockNodeInfo;
+			if (mIsPlacementNew == true)
+				newNode = (NodeInfo*)malloc(sizeof(NodeInfo));
+			else
+				newNode = new NodeInfo;
+
 			_ASSERT(newNode != nullptr);
 	
-			if (newNode->AllocBlockNode(mIsPlacementNew) == true)
-			{
-				newNode->next = mTopNode;
-				mTopNode = newNode;
-				// 할당한 개수 체크
-				++mAllocCount;
-			}
+			newNode->next = mTopNode.node;
+			mTopNode.node = newNode;
+
+			// 할당한 개수 체크
+			++mAllocCount;
 		}
 	}
 	virtual ~MemoryPool()
 	{
-		BlockNodeInfo* deleteNode = mTopNode;
-		BlockNodeInfo* tempNode = nullptr;
+		NodeInfo* deleteNode = mTopNode.node;
+		NodeInfo* tempNode = nullptr;
 
 		while (deleteNode != nullptr)
 		{
 			tempNode = deleteNode;
 			deleteNode = deleteNode->next;
 
-			// 오브젝트 삭제
-			tempNode->Release(mIsPlacementNew);
 			// 노드 삭제
 			if(tempNode)
 			{
-				delete tempNode;
+				if (mIsPlacementNew == true)
+					free(tempNode);
+				else
+					delete tempNode;
+
 				tempNode = nullptr;
 			}
 			// 할당한 개수 감소
@@ -91,68 +90,131 @@ public:
 	}
 	
 public:
-	// 블럭 할당 함수
-	BlockNodeInfo* Alloc(void)
+	void Initialize(int blockNum, bool isPlacementNew = false)
 	{
-		BlockNodeInfo* newNode = nullptr;
+		mIsPlacementNew = isPlacementNew;
+		NodeInfo* newNode = nullptr;
 
-		if (mTopNode == nullptr)
+		for (int i = 0; i < blockNum; ++i)
 		{
-			newNode = new BlockNodeInfo;
+			if (mIsPlacementNew == true)
+				newNode = (NodeInfo*)malloc(sizeof(NodeInfo));
+			else
+				newNode = new NodeInfo;
+
 			_ASSERT(newNode != nullptr);
 
-			// freelist인 경우에는 기본 생성자 호출 유도
-			if (newNode->AllocBlockNode(mIsPlacementNew) == true)
-			{
-				newNode->next = mTopNode;
-				mTopNode = newNode;
-				// 할당한 개수 체크
-				++mAllocCount;
-			}
-			else
-				return nullptr;
+			newNode->next = mTopNode.node;
+			mTopNode.node = newNode;
+
+			// 할당한 개수 체크
+			++mAllocCount;
 		}
+	}
+public: // debug 용 함수
+	void MemoryLog(const char funcName, const unsigned int threadID, int* topAddress, int* topAddressNext)
+	{
+		long memoryLogIndex = 0;
+		memoryLogIndex = InterlockedIncrement(&mMemoryLogIndex);
+		memoryLogIndex %= MEMORY_LOG_MAX_INDEX;
 
-		mFreeNode = mTopNode;
-		mTopNode = mFreeNode->next;
+		mMemoryLog[memoryLogIndex].funcName = funcName;
+		mMemoryLog[memoryLogIndex].threadID = threadID;
+		mMemoryLog[memoryLogIndex].topAddress = topAddress;
+		mMemoryLog[memoryLogIndex].topAddressNext = topAddressNext;
+		mMemoryLog[memoryLogIndex].threadCount = InterlockedIncrement(&mThreadCount);
+	}
 
-		// 사용중인 개수 체크
-		++mUseCount;
-		_ASSERT(mFreeNode != nullptr);
+public:
+	// 블럭 할당 함수
+	Object* Alloc(void)
+	{
+		NodeInfo* newNode = nullptr;
+		BlockNodeInfo oldNode;
+		BlockNodeInfo nextNode;
+
+		do
+		{
+			oldNode = mTopNode;
+			if (oldNode.node == nullptr)
+			{
+				NodeInfo* newNode = nullptr;
+
+				if (mIsPlacementNew == true)
+					newNode = (NodeInfo*)malloc(sizeof(NodeInfo));
+				else
+					newNode = new NodeInfo;
+				
+				_ASSERT(newNode != nullptr);
+
+				// 할당한 개수 체크
+				InterlockedIncrement((long*)&mAllocCount);
+				// 사용 개수 체크
+				InterlockedIncrement((long*)&mUseCount);
+				MemoryLog(ALLOC_NULLPTR, GetCurrentThreadId(), (int*)newNode, nullptr);
+
+				// placement boolean 값이 참인 경우에만 생성자 호출
+				if (mIsPlacementNew == true)
+					new (&(newNode->data)) Object();
+
+				return (Object*)newNode;
+			}
+			MemoryLog(ALLOC_BEFORE, GetCurrentThreadId(), (int*)oldNode.node, (int*)oldNode.node->next);
+			nextNode.node = oldNode.node->next;
+			nextNode.popCount = oldNode.popCount;
+			InterlockedIncrement64(&nextNode.popCount);
+			MemoryLog(ALLOC_BEFORE_AFTER, GetCurrentThreadId(), (int*)oldNode.node, (int*)oldNode.node->next);
+		} while (InterlockedCompareExchange128((LONG64*)&mTopNode, (LONG64)nextNode.popCount, 
+			(LONG64)nextNode.node, (LONG64*)&oldNode) == FALSE);
 
 		// placement boolean 값이 참인 경우에만 생성자 호출
-		if(mIsPlacementNew == true)
-			new (mFreeNode->data) Object();
+		if (mIsPlacementNew == true)
+			new (&(oldNode.node->data)) Object();
 
-		return mFreeNode;
+		// 사용중인 개수 체크
+		_InterlockedIncrement((long*)&mUseCount);
+
+		return (Object*)oldNode.node;
 	};
-	// 블럭 반환 삼수
-	bool Free(BlockNodeInfo* blockNode)
+	// 블럭 반환 함수
+	bool Free(Object* data)
 	{
-		_ASSERT(blockNode != nullptr);
+		_ASSERT(data != nullptr);
 
-		blockNode->next = mTopNode;
-		mTopNode = blockNode;
+		BlockNodeInfo oldNode;
+		BlockNodeInfo nextNode;
 
+		do
+		{
+			oldNode = mTopNode;
+			nextNode.node = (NodeInfo*)data;
+			nextNode.node->next = mTopNode.node;
+		} while (InterlockedCompareExchange128((LONG64*)&mTopNode, (LONG64)nextNode.popCount, 
+			(LONG64)nextNode.node, (LONG64*)&oldNode) == FALSE);
+		
 		// placement boolean 값이 참인 경우에만 소멸자 호출
 		if (mIsPlacementNew == true)
-			blockNode->data->~Object();
+			mTopNode.node->data.~Object();
 
 		// 사용중인 개수 감소
-		--mUseCount;
+		InterlockedDecrement((long*)&mUseCount);
 
 		return true;
 	};
 
 public:
-	int GetAllockCount() const { return mAllocCount; }
-	int GetUseCount() const { return mUseCount; }
+	inline int GetAllockCount() const { return mAllocCount; }
+	inline int GetUseCount() const { return mUseCount; }
 
 private:
-	BlockNodeInfo* mTopNode = nullptr;
-	BlockNodeInfo* mFreeNode = nullptr;
-	int mAllocCount = 0;
-	int mUseCount = 0;
+	BlockNodeInfo mTopNode;
+	__declspec(align(64)) int mAllocCount = 0;
+	__declspec(align(64)) int mUseCount = 0;
 	bool mIsPlacementNew = false;
+
+private: // Debug 용 변수
+	MemoryLogInfo mMemoryLog[MEMORY_LOG_MAX_INDEX];
+	long mMemoryLogIndex = -1;
+	long mThreadCount = 0;
 };
 

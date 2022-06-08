@@ -8,5 +8,12 @@
 #define PCH_H
 
 // 여기에 미리 컴파일하려는 헤더 추가
-#include <malloc.h>
+// 여기에 미리 컴파일하려는 헤더 추가
+#define CRTDBG_MAP_ALLOC 
+#include <stdlib.h> 
+#include <crtdbg.h>
+#include <Windows.h>
+#include <intrin.h>
+
+
 #endif //PCH_H

@@ -6,10 +6,7 @@ public:
 	~Test();
 
 public:
-	void IncreaseA() { ++ a;}
-private:
-	int a = 1;
-	short b = 2;
-	__int16 c = 3;
+	int testInt = 15;
+	short testChar = 20;
 };
 

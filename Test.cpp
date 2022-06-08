@@ -3,10 +3,12 @@
 
 Test::Test()
 {
-	a = 4;
+	testInt = 15;
+	testChar = 20;
 }
 
 Test::~Test()
 {
-	b = 5;
+	testInt = -1;
+	testChar = -1;
 }
